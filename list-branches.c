@@ -72,6 +72,8 @@ usage(const char *progname)
 int
 main(int argc, char **argv)
 {
+	char *pathbuf;
+	size_t size;
 	const char *path;
 	const git_error *err;
 	git_repository *repo;
@@ -90,10 +92,24 @@ main(int argc, char **argv)
 	{
 		path = getenv("GIT_DIR");
 	}
-	/* XXX use git_repository_discover */
+	pathbuf = NULL;
 	if(!path)
 	{
-		path = ".";
+		size = (size_t) pathconf(".", _PC_PATH_MAX);
+		pathbuf = (char *) malloc(size + 1);
+		if(!pathbuf)
+		{
+			perror(argv[0]);
+			exit(EXIT_FAILURE);
+		}
+		if(git_repository_discover(pathbuf, size + 1, ".", 0, "/"))
+		{
+			err = giterr_last();
+			free(pathbuf);
+			fprintf(stderr, "%s: %s\n", path, err->message);
+			exit(EXIT_FAILURE);
+		}
+		path = pathbuf;
 	}
 	if(git_repository_open(&repo, path))
 	{
@@ -109,5 +125,6 @@ main(int argc, char **argv)
 	filter.type = GIT_BRANCH_LOCAL | GIT_BRANCH_REMOTE;
 	git_reference_foreach(repo, GIT_REF_LISTALL, ref_callback, &filter);
 	git_repository_free(repo);
+	free(pathbuf);
 	return 0;
 }
