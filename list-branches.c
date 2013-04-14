@@ -30,7 +30,7 @@ branch_callback(const char *branch_name, git_branch_t branch_type, void *data)
 	default:
 		type = "unknown";
 	}
-	fprintf(stderr, "%s (%s)\n", branch_name, type);
+	printf("%s (%s)\n", branch_name, type);
 	return 0;
 }
 

@@ -21,7 +21,7 @@ tag_callback(const char *tag_name, git_oid *oid, void *data)
 	(void) data;
 	
 	git_oid_tostr(buf, sizeof(buf), oid);
-	fprintf(stderr, "%s -> %s\n", tag_name, buf);
+	printf("%s -> %s\n", tag_name, buf);
 	return 0;
 }
 
