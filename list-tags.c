@@ -72,6 +72,7 @@ main(int argc, char **argv)
 	struct tag_filter_struct filter;
 	size_t size;
 	
+	path = NULL;
 	if(argc == 2)
 	{
 		path = argv[1];

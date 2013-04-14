@@ -79,6 +79,7 @@ main(int argc, char **argv)
 	git_repository *repo;
 	struct branch_filter_struct filter;
 	
+	path = NULL;
 	if(argc == 2)
 	{
 		path = argv[1];
