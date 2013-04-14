@@ -8,7 +8,7 @@
 struct branch_filter_struct
 {
 	unsigned type;
-    int (*cb)(const char *branch_name, git_branch_t type, void *data);
+	int (*cb)(const char *branch_name, git_branch_t type, void *data);
 	void *data;
 };
 
