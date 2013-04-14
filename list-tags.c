@@ -9,15 +9,18 @@ struct tag_filter_struct
 {
 	int (*cb)(const char *tag_name, git_oid *oid, void *data);
 	void *data;
+	git_repository *repo;
 };
 
 static int
 tag_callback(const char *tag_name, git_oid *oid, void *data)
 {
-	(void) oid;
+	char buf[GIT_OID_HEXSZ + 1];
+	
 	(void) data;
 	
-	fprintf(stderr, "%s\n", tag_name);
+	git_oid_tostr(buf, sizeof(buf), oid);
+	fprintf(stderr, "%s -> %s\n", tag_name, buf);
 	return 0;
 }
 
@@ -27,13 +30,27 @@ ref_callback(const char *ref_name, void *data)
 	const char *prefix = "refs/tags/";
 	struct tag_filter_struct *filter;
 	size_t l;
+	int r;
+	git_reference *ref, *resolved;
+	git_oid oid;
 	
 	filter = (struct tag_filter_struct *) data;
 	
 	l = strlen(prefix);
 	if(!strncmp(ref_name, prefix, l))
 	{
-		return filter->cb(ref_name + l, NULL, filter->data);
+		ref = NULL;
+		resolved = NULL;
+		r = git_reference_lookup(&ref, filter->repo, ref_name);
+		if(r < 0)
+		{
+			return r;
+		}
+		git_reference_resolve(&resolved, ref);
+		git_reference_free(ref);
+		git_oid_cpy(&oid, git_reference_oid(resolved));
+		git_reference_free(resolved);
+		return filter->cb(ref_name + l, &oid, filter->data);
 	}
 	return 0;
 }
@@ -81,6 +98,7 @@ main(int argc, char **argv)
 	 */
 	filter.data = NULL;
 	filter.cb = tag_callback;
+	filter.repo = repo;
 	git_reference_foreach(repo, GIT_REF_LISTALL, ref_callback, &filter);
 	git_repository_free(repo);
 	return 0;
