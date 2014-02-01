@@ -8,14 +8,14 @@
 struct branch_filter_struct
 {
 	unsigned type;
-	int (*cb)(const char *branch_name, git_branch_t type, void *data);
+	int (*cb)(git_reference *ref, const char *branch_name, git_branch_t type, void *data);
 	git_oid *oid;
 	git_repository *repo;
 	git_revwalk *walker;
 };
 
 static int
-branch_callback(const char *ref_name, git_branch_t branch_type, void *data)
+branch_callback(git_reference *ref, const char *ref_name, git_branch_t branch_type, void *data)
 {
 	char buf[GIT_OID_HEXSZ + 1];
 	const char *type;
@@ -23,21 +23,13 @@ branch_callback(const char *ref_name, git_branch_t branch_type, void *data)
 	git_oid tip, found;
 	int match;
 	struct branch_filter_struct *filter;
-	git_reference *ref, *resolved;
-	int r;
+	git_reference *resolved;
 	
 	filter = (struct branch_filter_struct *) data;	
 	oid = filter->oid;
-	ref = NULL;
 	resolved = NULL;
-	r = git_reference_lookup(&ref, filter->repo, ref_name);
-	if(r < 0)
-	{
-		return r;
-	}
 	git_reference_resolve(&resolved, ref);
-	git_reference_free(ref);
-	git_oid_cpy(&tip, git_reference_oid(resolved));
+	git_oid_cpy(&tip, git_reference_target(resolved));
 	git_reference_free(resolved);
 	/* Determine whether oid exists in this branch's history by revwalking the
 	 * history
@@ -84,30 +76,27 @@ branch_callback(const char *ref_name, git_branch_t branch_type, void *data)
 }
 
 static int
-ref_callback(const char *ref_name, void *data)
+ref_callback(git_reference *ref, void *data)
 {
-	const char *local_prefix = "refs/heads/";
-	const char *remote_prefix = "refs/remotes/";
 	struct branch_filter_struct *filter;
-	size_t l;
+	const char *ref_name;
+	int remote;
 	
-	filter = (struct branch_filter_struct *) data;
-	
-	if(filter->type & GIT_BRANCH_LOCAL)
+	if(!git_reference_is_branch(ref))
 	{
-		l = strlen(local_prefix);
-		if(!strncmp(ref_name, local_prefix, l))
-		{
-			return filter->cb(ref_name, GIT_BRANCH_LOCAL, data);
-		}
+		return 0;
 	}
-	if(filter->type & GIT_BRANCH_REMOTE)
+	remote = git_reference_is_remote(ref);
+	ref_name = git_reference_name(ref);
+	filter = (struct branch_filter_struct *) data;
+
+	if(filter->type & GIT_BRANCH_LOCAL && !remote)
 	{
-		l = strlen(remote_prefix);
-		if(!strncmp(ref_name, remote_prefix, l))
-		{
-			return filter->cb(ref_name, GIT_BRANCH_REMOTE, data);
-		}
+		return filter->cb(ref, ref_name, GIT_BRANCH_LOCAL, data);
+	}
+	if(filter->type & GIT_BRANCH_REMOTE && remote)
+	{
+		return filter->cb(ref, ref_name, GIT_BRANCH_REMOTE, data);
 	}
 	return 0;
 }
@@ -180,7 +169,7 @@ main(int argc, char **argv)
 	filter.oid = &oid;
 	filter.cb = branch_callback;
 	filter.type = GIT_BRANCH_LOCAL | GIT_BRANCH_REMOTE;
-	git_reference_foreach(repo, GIT_REF_LISTALL, ref_callback, &filter);
+	git_reference_foreach(repo, ref_callback, &filter);
 	git_revwalk_free(filter.walker);
 	git_repository_free(repo);
 	free(pathbuf);

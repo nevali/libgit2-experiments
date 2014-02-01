@@ -8,15 +8,16 @@
 struct branch_filter_struct
 {
 	unsigned type;
-	int (*cb)(const char *branch_name, git_branch_t type, void *data);
+	int (*cb)(git_reference *ref, const char *branch_name, git_branch_t type, void *data);
 	void *data;
 };
 
 static int
-branch_callback(const char *branch_name, git_branch_t branch_type, void *data)
+branch_callback(git_reference *ref, const char *branch_name, git_branch_t branch_type, void *data)
 {
 	const char *type;
 	
+	(void) ref;
 	(void) data;
 	
 	switch(branch_type)
@@ -34,35 +35,6 @@ branch_callback(const char *branch_name, git_branch_t branch_type, void *data)
 	return 0;
 }
 
-static int
-ref_callback(const char *ref_name, void *data)
-{
-	const char *local_prefix = "refs/heads/";
-	const char *remote_prefix = "refs/remotes/";
-	struct branch_filter_struct *filter;
-	size_t l;
-	
-	filter = (struct branch_filter_struct *) data;
-	
-	if(filter->type & GIT_BRANCH_LOCAL)
-	{
-		l = strlen(local_prefix);
-		if(!strncmp(ref_name, local_prefix, l))
-		{
-			return filter->cb(ref_name + l, GIT_BRANCH_LOCAL, filter->data);
-		}
-	}
-	if(filter->type & GIT_BRANCH_REMOTE)
-	{
-		l = strlen(remote_prefix);
-		if(!strncmp(ref_name, remote_prefix, l))
-		{
-			return filter->cb(ref_name + l, GIT_BRANCH_REMOTE, filter->data);
-		}
-	}
-	return 0;
-}
-
 static void
 usage(const char *progname)
 {
@@ -77,8 +49,12 @@ main(int argc, char **argv)
 	const char *path;
 	const git_error *err;
 	git_repository *repo;
-	struct branch_filter_struct filter;
+	git_branch_iterator *iter;
+	git_branch_t type;
+	git_reference *ref;
 	
+	struct branch_filter_struct filter;
+
 	path = NULL;
 	if(argc == 2)
 	{
@@ -124,7 +100,12 @@ main(int argc, char **argv)
 	filter.data = NULL;
 	filter.cb = branch_callback;
 	filter.type = GIT_BRANCH_LOCAL | GIT_BRANCH_REMOTE;
-	git_reference_foreach(repo, GIT_REF_LISTALL, ref_callback, &filter);
+	git_branch_iterator_new(&iter, repo, filter.type);
+	while(git_branch_next(&ref, &type, iter) == 0)
+	{
+		filter.cb(ref, git_reference_name(ref), type, filter.data);
+	}
+	git_branch_iterator_free(iter);
 	git_repository_free(repo);
 	free(pathbuf);
 	return 0;

@@ -6,11 +6,11 @@
 #include <git2.h>
 
 static int
-config_callback(const char *value, void *data)
+config_callback(const git_config_entry *entry, void *data)
 {
 	(void) data;
 	
-	puts(value);
+	puts(entry->value);
 	return 0;
 }
 
@@ -25,7 +25,7 @@ main(int argc, char **argv)
 {
 	char *pathbuf;
 	size_t size;
-	const char *path;
+	const char *path = NULL;
 	const git_error *err;
 	git_repository *repo;
 	git_config *cfg;
@@ -74,7 +74,7 @@ main(int argc, char **argv)
 		fprintf(stderr, "%s: %s\n", path, err->message);
 		exit(EXIT_FAILURE);		
 	}
-	git_config_get_multivar(cfg, argv[1], NULL, config_callback, NULL);
+	git_config_get_multivar_foreach(cfg, argv[1], NULL, config_callback, NULL);
 	git_config_free(cfg);
 	git_repository_free(repo);
 	free(pathbuf);

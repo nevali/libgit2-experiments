@@ -1,4 +1,6 @@
-LIBGIT2_PREFIX ?= /opt/local
+LIBGIT2_PREFIX ?= libgit2
+LIBGIT2_INCLUDEDIR ?= $(LIBGIT2_PREFIX)/include
+LIBGIT2_LIBDIR ?= $(LIBGIT2_PREFIX)
 
 LISTBRANCH_OUT = listbranch
 LISTBRANCH_OBJ = list-branches.o
@@ -12,8 +14,8 @@ GETALL_OBJ = config-getall.o
 BRANCHFOR_OUT = branchfor
 BRANCHFOR_OBJ = branches-with-commit.o
 
-CFLAGS = -I$(LIBGIT2_PREFIX)/include -W -Wall -O0 -ggdb
-LDFLAGS = -L$(LIBGIT2_PREFIX)/lib
+CFLAGS = -I$(LIBGIT2_INCLUDEDIR) -W -Wall -O0 -ggdb
+LDFLAGS = -L$(LIBGIT2_LIBDIR)
 LIBS = -lgit2
 
 all: $(LISTBRANCH_OUT) $(LISTTAG_OUT) $(GETALL_OUT) $(BRANCHFOR_OUT)
