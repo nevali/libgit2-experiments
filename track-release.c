@@ -22,12 +22,12 @@
  *
  * The database consists of a single table, "releases", which is defined as:
  *
- *   "release"    (string) The version number
- *   "branch"     (string) The name of the branch/package repository
- *   "commit"     (string) The full 40-character OID of the commit
+ *   "release"    (string)   The version number
+ *   "commit"     (string)   The full 40-character OID of the commit
+ *   "branch"     (string)   The name of the branch/package repository
  *   "when"       (datetime) The timestamp of the commit
  *   "added"      (datetime) The timestamp that the release was added
- *   "state"      (string) The state of the release, initially "NEW"
+ *   "state"      (string)   The state of the release, initially "NEW"
  *   "built"      (datetime) The timestamp that the release was built
  *
  * The primary key of the table is (release, branch).
@@ -61,7 +61,7 @@
  * Tag names for tips have the form YYMM.DDHH.MMSS-gitXXXXXXX (where XXXXXXX
  * is the shortened OID of the commit).
  *
- * For tag-tracked branches, the tag must in the form:
+ * For tag-tracked branches, the tag must be in the form:
  *
  * <major>.<minor>...
  * r<major>.<minor>...
