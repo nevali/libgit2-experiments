@@ -1,3 +1,86 @@
+/* This is a utility, intended to be invoked in a post-receive hook, which
+ * maintains a SQLite3 database of releases.
+ *
+ * Releases are defined in one of two ways, depending upon how things are
+ * configured.
+ *
+ * Each configured branch is intended to map to a package repository. So,
+ * you might have a 'master' branch whose releases are pushed into an
+ * integration repository. For that, you would set the release tracking mode to
+ * 'tip' - which means every time this utility sees that the tip of the
+ * branch points to a new commit, it will generate a version number for it
+ * and add it to the database.
+ *
+ * Meanwhile, you might have 'testing' and 'live' branches, for which you
+ * only want to build tagged releases. For this, you would set the release
+ * tracking mode to 'tag'. For each tag-tracked branch, the history is
+ * walked to see if there are any commits matching tags whose names look
+ * like a version number. If so, it will add it to the database. Of course,
+ * the same tag might point at a commit which exists in multiple
+ * release-tracked branches; in which case, the version will be added to
+ * the database against both branches.
+ *
+ * The database consists of a single table, "releases", which is defined as:
+ *
+ *   "release"    (string) The version number
+ *   "branch"     (string) The name of the branch/package repository
+ *   "commit"     (string) The full 40-character OID of the commit
+ *   "when"       (datetime) The timestamp of the commit
+ *   "added"      (datetime) The timestamp that the release was added
+ *   "state"      (string) The state of the release, initially "NEW"
+ *   "built"      (datetime) The timestamp that the release was built
+ *
+ * The primary key of the table is (release, branch).
+ *
+ * This utility will always add new rows with a state of "NEW" and a build
+ * date of NULL. It will never update them itself: they're intended to assist
+ * something else in actually triggering/performing builds.
+ *
+ * If a (release, branch) row exists but the commit OID differs, the existing
+ * entry will be removed and added afresh (i.e., because the tag was deleted
+ * and re-created in between pushes).
+ *
+ * This utility does not detect if a tag is deleted, because there is little
+ * value in doing so -- although it would be fairly straightforward to add
+ * if desirable.
+ *
+ * Per-branch configuration looks like this:
+ *
+ * [release-branch "master"]
+ * track = tip
+ *
+ * [release-branch "stable"]
+ * track = tag
+ *
+ * Branches without a release-branch...track configuration setting are
+ * ignored.
+ *
+ * Branch names must consist of letters, numbers, hyphens and underscores
+ * in order to be release-tracked.
+ *
+ * Tag names for tips have the form YYMM.DDHH.MMSS-gitXXXXXXX (where XXXXXXX
+ * is the shortened OID of the commit).
+ *
+ * For tag-tracked branches, the tag must in the form:
+ *
+ * <major>.<minor>...
+ * r<major>.<minor>...
+ * v<major>.<minor>...
+ * debian/<major>.<minor>...
+ * release/<major>.<minor>...
+ *
+ * The <major> part must be all-numeric.
+ * The <minor> part must begin with a digit. The remainder must consist only
+ * of letters, numbers, dashes, underscores, full stops and tildes.
+ *
+ * Tags which do not match any of the above patterns are silently ignored.
+ *
+ * The releases database is named 'releases.sqlite3' and is created within
+ * $GIT_DIR (by default the root of a bare repository, or in the '.git'
+ * directory in a non-bare repository). Any SQLite3 client (including the
+ * 'sqlite3' command-line utility) should be able to open and inspect it.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
