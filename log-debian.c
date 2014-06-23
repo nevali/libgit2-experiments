@@ -225,7 +225,8 @@ log_commit(struct repo_data_struct *repo, git_commit *commit, const char *branch
 int
 main(int argc, char **argv)
 {
-	char *pathbuf, *namebuf, *p;
+	git_buf pathbuf;
+	char *namebuf, *p;
 	size_t size;
 	const char *path, *branch, *branchname, *s, *t;
 	const git_error *err;
@@ -251,24 +252,16 @@ main(int argc, char **argv)
 	{
 		path = getenv("GIT_DIR");
 	}
-	pathbuf = NULL;
+	memset(&pathbuf, 0, sizeof(pathbuf));
 	if(!path)
 	{
-		size = (size_t) pathconf(".", _PC_PATH_MAX);
-		pathbuf = (char *) malloc(size + 1);
-		if(!pathbuf)
-		{
-			perror(argv[0]);
-			exit(EXIT_FAILURE);
-		}
-		if(git_repository_discover(pathbuf, size + 1, ".", 0, "/"))
+		if(git_repository_discover(&pathbuf, ".", 0, "/"))
 		{
 			err = giterr_last();
-			free(pathbuf);
 			fprintf(stderr, "%s: %s\n", path, err->message);
 			exit(EXIT_FAILURE);
 		}
-		path = pathbuf;
+		path = pathbuf.ptr;
 	}
 	if(git_repository_open(&(repo.repo), path))
 	{
@@ -313,7 +306,6 @@ main(int argc, char **argv)
 	if(git_branch_lookup(&ref, repo.repo, branch, GIT_BRANCH_LOCAL))
 	{
 		err = giterr_last();
-		free(pathbuf);
 		fprintf(stderr, "%s: %s\n", repo.path, err->message);
 		exit(EXIT_FAILURE);	
 	}
@@ -331,9 +323,7 @@ main(int argc, char **argv)
 		if(git_commit_lookup(&commit, repo.repo, &oid))
 		{
 			err = giterr_last();
-			free(pathbuf);
 			fprintf(stderr, "%s: %s\n", repo.path, err->message);
-			git_repository_free(repo.repo);
 			exit(EXIT_FAILURE);	
 		}
 		log_commit(&repo, commit, branchname);
@@ -341,6 +331,6 @@ main(int argc, char **argv)
 	log_commit(&repo, NULL, NULL);
 	git_revwalk_free(walker);
 	git_repository_free(repo.repo);
-	free(pathbuf);
+	git_buf_free(&pathbuf);
 	return 0;
 }

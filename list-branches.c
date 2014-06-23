@@ -44,8 +44,7 @@ usage(const char *progname)
 int
 main(int argc, char **argv)
 {
-	char *pathbuf;
-	size_t size;
+	git_buf pathbuf;
 	const char *path;
 	const git_error *err;
 	git_repository *repo;
@@ -69,24 +68,16 @@ main(int argc, char **argv)
 	{
 		path = getenv("GIT_DIR");
 	}
-	pathbuf = NULL;
+	memset(&pathbuf, 0, sizeof(pathbuf));
 	if(!path)
 	{
-		size = (size_t) pathconf(".", _PC_PATH_MAX);
-		pathbuf = (char *) malloc(size + 1);
-		if(!pathbuf)
-		{
-			perror(argv[0]);
-			exit(EXIT_FAILURE);
-		}
-		if(git_repository_discover(pathbuf, size + 1, ".", 0, "/"))
+		if(git_repository_discover(&pathbuf, ".", 0, "/"))
 		{
 			err = giterr_last();
-			free(pathbuf);
 			fprintf(stderr, "%s: %s\n", path, err->message);
 			exit(EXIT_FAILURE);
 		}
-		path = pathbuf;
+		path = pathbuf.ptr;
 	}
 	if(git_repository_open(&repo, path))
 	{
@@ -107,6 +98,6 @@ main(int argc, char **argv)
 	}
 	git_branch_iterator_free(iter);
 	git_repository_free(repo);
-	free(pathbuf);
+	git_buf_free(&pathbuf);
 	return 0;
 }
