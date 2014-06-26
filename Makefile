@@ -14,8 +14,8 @@ GETALL_OBJ = config-getall.o
 BRANCHFOR_OUT = branchfor
 BRANCHFOR_OBJ = branches-with-commit.o
 
-DEBLOG_OUT = deblog
-DEBLOG_OBJ = log-debian.o
+DEBLOG_OUT = git-debian-changelog
+DEBLOG_OBJ = log-debian.o utils.o
 
 TRACKRELEASE_OUT = trackrelease
 TRACKRELEASE_OBJ = track-release.o
@@ -34,7 +34,7 @@ $(TRACKRELEASE_OUT): $(TRACKRELEASE_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $+ -lsqlite3 $(LIBS)
 
 $(DEBLOG_OUT): $(DEBLOG_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $+ $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $+ -lsqlite3 $(LIBS)
 
 $(LISTBRANCH_OUT): $(LISTBRANCH_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $+ $(LIBS)

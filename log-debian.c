@@ -4,7 +4,7 @@
 #include <string.h>
 #include <ctype.h>
 
-#include <git2.h>
+#include "utils.h"
 
 /* Output a changelog in Debian format:
 
@@ -18,44 +18,23 @@ package (version) branch; urgency=low
 
 */
 
-struct repo_data_struct
-{
-	git_repository *repo;
-	const char *path;
-	char *name;
-};
-
 struct tag_match_struct
 {
+	REPO *repo;
 	const git_oid *oid;
 	char *buf;
 	size_t buflen;
 };
 
-
 static void
 usage(const char *progname)
 {
-	fprintf(stderr, "Usage: %s BRANCH [PATH-TO-REPO]\nHonours GIT_DIR if set.\n", progname);
-}
-
-static int
-git_gmtime(const git_time *intime, struct tm *tm, int *hours, int *minutes, char *sign)
-{
-	int offset;
-	time_t t;
-
-	offset = intime->offset;
-	*sign = (offset < 0 ? '-' : '+');
-	if(offset < 0)
-	{
-		offset = -offset;
-	}
-	*hours = offset / 60;
-	*minutes = offset % 60;
-	t = (time_t) intime->time + (intime->offset * 60);
-	gmtime_r(&t, tm);
-	return 0;
+	fprintf(stderr, "Usage: %s [OPTIONS] BRANCH [PATH-TO-REPO]\nHonours GIT_DIR if set. OPTIONS is one or more of:\n", progname);
+	fprintf(stderr,
+			"  -h            Print this usage message and exit\n"
+			"  -c COMMITID   Begin the log at this commit. If the commit does not appear\n"
+			"                on this branch or doesn't correspond to a release, an error\n"
+			"                will be reported.\n");
 }
 
 static int
@@ -65,70 +44,76 @@ tag_callback(const char *tag_name, git_oid *oid, void *data)
 	const char *t;
 	
 	match = (struct tag_match_struct *) data;
-	if(!git_oid_cmp(oid, match->oid))
+	t = check_release_tag(tag_name);
+	if(!t)
 	{
-		if(!strncmp(tag_name, "refs/tags/", 10))
-		{
-			tag_name += 10;
-		}
-		if(tolower(tag_name[0]) == 'v' || tolower(tag_name[0]) == 'r')
-		{
-			tag_name++;
-		}
-		else if(!strncmp(tag_name, "debian/", 7))
-		{
-			tag_name += 7;
-		}
-		else if(!strncmp(tag_name, "release/", 8))
-		{
-			tag_name+= 8;
-		}
-		if(!tag_name[0])
-		{
-			return 0;
-		}
-		/* Check that the remainder of the tag looks something
-		 * like a version number: this means that it must consist
-		 * of a string which begins with '999.9', where '999' is
-		 * any number of digits.
-		 */
-		t= tag_name;
-		while(*t && isdigit(*t))
-		{
-			t++;
-		}
-		if(*t != '.')
-		{
-			return 0;
-		}
-		t++;
-		if(!isdigit(*t))
-		{
-			return 0;
-		}
-		strncpy(match->buf, tag_name, match->buflen);
+		return 0;
+	}
+	if(git_oid_cmp(oid, match->oid))
+	{
+		return 0;
+	}
+	strncpy(match->buf, t, match->buflen);
+	match->buf[match->buflen - 1] = 0;
+	return 1;
+}
+
+static int
+release_exists_cb(void *data, int ncols, char **values, char **columns)
+{
+	struct tag_match_struct *match;
+
+	(void) ncols;
+	(void) columns;
+
+	match = (struct tag_match_struct *) data;
+	
+	if(values[0])
+	{
+		strncpy(match->buf, values[0], match->buflen);
 		match->buf[match->buflen - 1] = 0;
-		return 1;
 	}
 	return 0;
 }
 
 static const char *
-commit_is_release(struct repo_data_struct *repo, git_commit *commit)
+commit_is_release(REPO *repo, git_commit *commit, const char *branchname)
 {
 	static char version[64];
 	const git_oid *id;
+	char oidstr[GIT_OID_HEXSZ+1];
 	struct tag_match_struct match;
-	
+	char sqlbuf[256];
+	char *err;
+
 	if(!commit)
 	{
 		return NULL;
 	}
-	id = git_commit_id(commit);
-	match.oid = id;
+	id = git_commit_id(commit);  
 	version[0] = 0;
+	match.repo = repo;
 	match.buf = version;
 	match.buflen = sizeof(version);
+	if(repo->db)
+	{
+		git_oid_fmt(oidstr, id);
+		oidstr[GIT_OID_HEXSZ] = 0;
+		sprintf(sqlbuf, "SELECT \"release\" FROM \"releases\" WHERE \"branch\" = '%s' AND \"commit\" = '%s'", branchname, oidstr);
+		err = NULL;
+		if(sqlite3_exec(repo->db, sqlbuf, release_exists_cb, (void *) &match, &err))
+		{
+			fprintf(stderr, "%s: %s\n", repo->progname, err);
+			exit(EXIT_FAILURE);
+		}
+		if(version[0])
+		{
+			return version;
+		}
+		return NULL;
+	}
+	match.oid = id;
+
 	git_tag_foreach(repo->repo, tag_callback, (void *) &match);
 	if(version[0])
 	{
@@ -179,7 +164,7 @@ log_commit_message(const char *message)
 }
 
 static int
-log_commit(struct repo_data_struct *repo, git_commit *commit, const char *branchname)
+log_commit(REPO *repo, git_commit *commit, const char *branchname)
 {
 	static const git_signature *relsig;
 	const git_signature *sig;
@@ -188,12 +173,12 @@ log_commit(struct repo_data_struct *repo, git_commit *commit, const char *branch
 	char sign, datebuf[64];
 	const char *vers;
 	
-	vers = commit_is_release(repo, commit);
+	vers = commit_is_release(repo, commit, branchname);
 	if(!commit || vers)
 	{
 		if(relsig)
 		{
-			git_gmtime(&(relsig->when), &tm, &hours, &minutes, &sign);
+			gmgittime(&(relsig->when), &tm, &hours, &minutes, &sign);
 			strftime(datebuf, sizeof(datebuf), "%a, %e %b %Y %H:%M:%S", &tm);
 			printf("\n -- %s <%s>  %s %c%02d%02d\n", relsig->name, relsig->email, datebuf, sign, hours, minutes);
 			relsig = NULL;
@@ -212,125 +197,159 @@ log_commit(struct repo_data_struct *repo, git_commit *commit, const char *branch
 		/* We haven't yet reached a release */
 		return 0;
 	}
-	sig = git_commit_author(commit);
+	sig = git_commit_committer(commit);
 	if(!relsig)
 	{
 		relsig = sig;
 		printf("%s (%s) %s; urgency=low\n\n", repo->name, vers, branchname);
 	}
 	log_commit_message(git_commit_message(commit));
-	return 0;
+	return 1;
 }
 
 int
 main(int argc, char **argv)
 {
-	git_buf pathbuf;
-	char *namebuf, *p;
-	size_t size;
-	const char *path, *branch, *branchname, *s, *t;
+	const char *path, *branch, *startcommit;
 	const git_error *err;
 	const git_oid *tip;
-	git_oid oid;
+	git_object *startobj;
+	git_oid oid, startoid;
 	git_reference *ref;
 	git_revwalk *walker;
 	git_commit *commit;
-	struct repo_data_struct repo;
-	
-	if(argc < 2)
+	char oidstr[GIT_OID_HEXSZ+1];
+	REPO *repo;
+	int c, started;
+
+	startcommit = NULL;
+	while((c = getopt(argc, argv, "hc:")) != -1)
+	{	
+		switch(c)
+		{
+		case 'h':
+			usage(argv[0]);
+			exit(EXIT_SUCCESS);
+		case 'c':
+			startcommit = optarg;
+			break;
+		default:
+			usage(argv[0]);
+			exit(EXIT_FAILURE);
+		}
+	}
+	if(argc - optind < 1 || argc - optind > 2)
 	{
 		usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
-	branch = argv[1];
+	branch = argv[optind];
 	path = NULL;
-	if(argc == 3)
+	if(argc - optind > 1)
 	{
-		path = argv[2];
+		path = argv[optind + 1];
 	}
-	if(!path)
+	repo = repo_open(argv[0], path, SQLITE_OPEN_READONLY, 0);
+	if(!repo)
 	{
-		path = getenv("GIT_DIR");
-	}
-	memset(&pathbuf, 0, sizeof(pathbuf));
-	if(!path)
-	{
-		if(git_repository_discover(&pathbuf, ".", 0, "/"))
-		{
-			err = giterr_last();
-			fprintf(stderr, "%s: %s\n", path, err->message);
-			exit(EXIT_FAILURE);
-		}
-		path = pathbuf.ptr;
-	}
-	if(git_repository_open(&(repo.repo), path))
-	{
-		err = giterr_last();
-		fprintf(stderr, "%s: %s\n", path, err->message);
 		exit(EXIT_FAILURE);
 	}
-	repo.path = path;
-	namebuf = (char *) malloc(strlen(path) + 1);
-	repo.name = namebuf;
-	while(path)
+	/* If there's a starting commit, find its OID */
+	if(startcommit)
 	{
-		t = strchr(path, '/');
-		if(!t)
+		startobj = NULL;
+		if(git_revparse_single(&startobj, repo->repo, startcommit))
 		{
-			strcpy(namebuf, path);
-			break;
+			err = giterr_last();
+			fprintf(stderr, "%s: %s\n", repo->progname, err->message);
+			repo_close(repo);
+			exit(EXIT_FAILURE);
 		}
-		/* Skip any duplicate slashes */
-		for(s = t; *s == '/'; s++);
-		/* Backtrack if the name ended with a slash or the last path component is
-		 * ".git"
-		 */
-		if(!*s || !strcmp(s, ".git") || !strcmp(s, ".git/"))
+		if(git_object_type(startobj) != GIT_OBJ_COMMIT)
 		{
-			strcpy(namebuf, path);
-			namebuf[(t - path)] = 0;
-			break;
+			fprintf(stderr, "%s: unable to find a commit for '%s'\n", repo->progname, startcommit);
+			git_object_free(startobj);
+			repo_close(repo);
+			exit(EXIT_FAILURE);
 		}
-		path = t + 1;
+		git_oid_cpy(&startoid, git_commit_id((git_commit *) startobj));
+		git_object_free(startobj);
 	}
-	/* Trim a .git suffix if present */
-	if(strlen(namebuf) > 4)
-	{
-		p = strchr(namebuf, 0);
-		p -= 4;
-		if(!strcmp(p, ".git"))
-		{
-			*p = 0;
-		}
-	}
-	if(git_branch_lookup(&ref, repo.repo, branch, GIT_BRANCH_LOCAL))
+	/* Look the target branch up */
+	if(git_branch_lookup(&ref, repo->repo, branch, GIT_BRANCH_LOCAL))
 	{
 		err = giterr_last();
-		fprintf(stderr, "%s: %s\n", repo.path, err->message);
+		fprintf(stderr, "%s: %s\n", repo->progname, err->message);
+		repo_close(repo);
 		exit(EXIT_FAILURE);	
 	}
+
 	/* Obtain the canonical branch name */
-	git_branch_name(&branchname, ref);
+	git_branch_name(&branch, ref);
 	/* Find the tip of the branch */
 	tip = git_reference_target(ref);
 	git_oid_cpy(&oid, tip);
 	/* Create a walker for the log entries for this branch */
-	git_revwalk_new(&walker, repo.repo);
+	git_revwalk_new(&walker, repo->repo);
 	git_revwalk_sorting(walker, GIT_SORT_TOPOLOGICAL);
 	git_revwalk_push(walker, &oid);
+	if(startcommit)
+	{
+		/* Wait until we find the requested commit before logging
+		 * releases.
+		 */
+		started = 0;
+	}
+	else
+	{
+		/* Log all releases on the branch */
+		started = 1;
+	}		
 	while(!git_revwalk_next(&oid, walker))
 	{
-		if(git_commit_lookup(&commit, repo.repo, &oid))
+		if(git_commit_lookup(&commit, repo->repo, &oid))
 		{
 			err = giterr_last();
-			fprintf(stderr, "%s: %s\n", repo.path, err->message);
+			fprintf(stderr, "%s: %s\n", repo->progname, err->message);
+			repo_close(repo);
 			exit(EXIT_FAILURE);	
 		}
-		log_commit(&repo, commit, branchname);
+		if(!started)
+		{
+			if(git_oid_cmp(&oid, &startoid))
+			{
+				continue;
+			}
+			/* Don't set 'started' until after the commit has been
+			 * logged and we know that it actually corresponded to
+			 * a release.
+			 */
+		}
+		if(!log_commit(repo, commit, branch) && !started)
+		{
+			/* The requested starting commit did appear on the branch,
+			 * but didn't correspond to a release, which we consider to
+			 * be an error.
+			 */
+			git_oid_fmt(oidstr, &startoid);
+			oidstr[GIT_OID_HEXSZ] = 0;
+			fprintf(stderr, "%s: commit '%s' is not a release on '%s'\n", repo->progname, oidstr, branch);
+			git_revwalk_free(walker);
+			repo_close(repo);
+			exit(EXIT_FAILURE);
+		}
+		started = 1;
 	}
-	log_commit(&repo, NULL, NULL);
+	log_commit(repo, NULL, NULL);
 	git_revwalk_free(walker);
-	git_repository_free(repo.repo);
-	git_buf_free(&pathbuf);
+	if(!started)
+	{
+		git_oid_fmt(oidstr, &startoid);
+		oidstr[GIT_OID_HEXSZ] = 0;
+		fprintf(stderr, "%s: commit '%s' does not appear on branch '%s'\n", repo->progname, oidstr, branch);
+		repo_close(repo);
+		exit(EXIT_FAILURE);
+	}	
+	repo_close(repo);
 	return 0;
 }
