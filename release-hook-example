@@ -1,0 +1,77 @@
+#! /bin/sh
+
+## This is a example of a 'release' hook, invoked by git-track-releases for
+## each new build that it discovers.
+##
+## A typical setup would be to invokve git-track-releases from your
+## post-receive hook, and then copy this file to hooks/release and
+## make it executable.
+##
+## Release hooks are invoked with three command-line arguments:
+##  COMMIT       The OID of the commit to build
+##  BRANCH       The name of the branch/package repository
+##  VERSION      The version number (e.g., 3.21p1) this build
+##               corresponds to.
+##
+## This particular implementation uses git-buildpackage in order to generate
+## a Debian package for the release. It assumes git-buildpackage has been
+## appropriately configured already. It also uses git-debian-changelog
+## in order to generate a debian/changelog that git-buildpackage can use.
+
+if test x"$3" = x"" ; then
+	echo "Usage: $0 COMMIT REPO VERSION" >&2
+	exit 1
+fi
+
+GIT_BUILD_COMMIT=`git rev-parse "$1"`
+if test x"$GIT_BUILD_COMMIT" = x"" ; then
+	echo "$0: unable to determine commit object to build" >&2
+	exit 1
+fi
+export GIT_BUILD_COMMIT
+GIT_BUILD_REPO="$2"
+export GIT_BUILD_REPO
+GIT_BUILD_VERSION="$3"
+export GIT_BUILD_VERSION
+
+echo "$0: building $GIT_BUILD_COMMIT as $GIT_BUILD_VERSION for $GIT_BUILD_REPO" >&2
+
+set -x
+buildroot=/var/tmp/git-autobuild.$$
+
+## Clone this repository into a temporary build root
+git clone -n `pwd` $buildroot || exit $?
+
+## Generate a debian/changelog for this release
+git debian-changelog -c $GIT_BUILD_COMMIT $GIT_BUILD_REPO `pwd` > $buildroot.changelog || exit $?
+
+## Because git-buildpackage requires a clean tree on a named branch,
+## create a branch (named 'git-autobuild') from the commit, then add
+## the generated debian/changelog. Finally, invoke git-buildpackage to
+## generate the .deb.
+
+cd $buildroot
+unset GIT_DIR
+git branch -f git-autobuild "$GIT_BUILD_COMMIT" &&
+	git checkout git-autobuild && \
+	git submodule update --init --recursive
+result=$?
+if [ $result -gt 0 ] ; then
+	cd /
+	rm -rf "$buildroot"
+	exit $result
+fi
+
+mkdir -p $buildroot/debian
+mv $buildroot.changelog $buildroot/debian/changelog
+git add -f debian/changelog && git commit debian/changelog -m 'Update changelog for build of $GIT_BUILDVERSION'
+result=$?
+
+if [ $result -eq 0 ] ; then
+	git-buildpackage --git-debian-branch=git-autobuild
+	result=$?
+fi
+
+cd /
+rm -rf "$buildroot"
+exit $result
