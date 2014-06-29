@@ -17,8 +17,8 @@ BRANCHFOR_OBJ = branches-with-commit.o
 DEBLOG_OUT = git-debian-changelog
 DEBLOG_OBJ = log-debian.o utils.o
 
-TRACKRELEASE_OUT = trackrelease
-TRACKRELEASE_OBJ = track-release.o
+TRACKRELEASE_OUT = git-track-releases
+TRACKRELEASE_OBJ = track-release.o utils.o
 
 CFLAGS = -I$(LIBGIT2_INCLUDEDIR) -W -Wall -O0 -ggdb
 LDFLAGS = -L$(LIBGIT2_LIBDIR)

@@ -53,5 +53,7 @@ const char *check_release_branch(const char *branch_name);
  * offset and sign
  */
 int gmgittime(const git_time *time, struct tm *tm, int *hours, int *minutes, char *signptr);
+/* Spawn a process with sensible defaults and wait for it to complete */
+int spawn(const char *pathname, char *const *argv);
 
 #endif /*!UTILS_H_*/

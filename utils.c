@@ -8,6 +8,9 @@
 #include <string.h>
 #include <errno.h>
 #include <ctype.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
 
 #include "utils.h"
 
@@ -326,4 +329,71 @@ gmgittime(const git_time *time, struct tm *tm, int *hours, int *minutes, char *s
 		*signptr = sign;
 	}
 	return 0;
+}
+
+/* Spawn a process with sensible defaults and wait for it to complete */
+int
+spawn(const char *pathname, char *const *argv)
+{
+	pid_t p, r;
+	int status;
+	sigset_t signals, saved;
+	struct sigaction ignore, savedint, savedquit;
+	
+	/* Save the current signal set, and block SIGCHLD, SIGINT and SIGQUIT */
+	sigemptyset(&signals);
+	sigaddset(&signals, SIGINT);
+	sigaddset(&signals, SIGCHLD);
+	sigaddset(&signals, SIGQUIT);
+	sigprocmask(SIG_BLOCK, &signals, &saved);
+	/* Fork the child process */
+	p = fork();
+	if(p == -1)
+	{
+		/* Unable to fork */
+		sigprocmask(SIG_SETMASK, &saved, NULL);
+		return -1;
+	}
+	if(p == 0)
+	{
+		/* Child */
+		sigprocmask(SIG_SETMASK, &saved, NULL);
+		execve(pathname, argv, __environ);
+		_exit(127);
+	}
+	/* Parent */
+	/* Unblock, but ignore, SIGINT and SIGQUIT */
+	memset(&ignore, 0, sizeof(ignore));
+	ignore.sa_handler = SIG_IGN;
+	sigemptyset(&ignore.sa_mask);
+	sigaction(SIGINT, &ignore, &savedint);
+	sigaction(SIGQUIT, &ignore, &savedquit);
+	/* Wait for the child */
+	do
+	{
+		r = waitpid(p, &status, 0);
+	}
+	while(r == -1 && errno == EINTR);
+	if(r == -1)
+	{
+		fprintf(stderr, "waitpid(%d) returned %d: %s\n", (int) p, errno, strerror(errno));
+	}
+	/* Restore the signals */
+	sigaction(SIGINT, &savedint, NULL);
+	sigaction(SIGQUIT, &savedquit, NULL);
+	sigprocmask(SIG_SETMASK, &saved, NULL);
+	if(r == -1)
+	{
+		return -1;
+	}
+	if(WIFEXITED(status))
+	{
+		return WEXITSTATUS(status);
+	}
+	if(WIFSIGNALED(status))
+	{
+		return -WTERMSIG(status);
+	}
+	/* Something... else... happened to the child; spooky. */
+	return -1;
 }

@@ -89,70 +89,42 @@
 #include <alloca.h>
 #include <errno.h>
 
-#include <sqlite3.h>
-#include <git2.h>
+#include "utils.h"
 
-struct repo_data_struct
+static char *sqlbuf;
+static size_t sqlbuflen;
+
+struct tag_match_struct
 {
-	/* The program name, for error messages */
-	const char *progname;
-	/* The libgit2 repository object */
-	git_repository *repo;
-	/* The libgit2 configuration dictionary */
-	git_config *cfg;
-	/* The path to the repository */
-	const char *path;
-	/* The path to the SQLite3 database */
-	char *dbpath;
-	/* The SQLite3 database object */
-	sqlite3 *db;
-	/* The current branch name */
-	const char *branch_name;
-	/* SQL query buffer */
-	char *sqlbuf;
-	/* Size of the SQL query buffer */
-	size_t sqlbuflen;
+	/* The repository we're matching against */
+	REPO *repo;
 	/* The OID to match (in iterator callbacks) */
 	git_oid oidmatch;
-	/* The formatted OID to match (in query callbacks) */
+	/* The current branch name */
+	const char *branch_name;
+};
+
+struct release_match_struct
+{
+	/* The formatted OID to match */
 	char oidstr[GIT_OID_HEXSZ+1];
-	/* Result code from iterator callbacks */
+	/* The matching result:
+	 *   0 = not found, 1 = found, 2 = found but OID differs
+	 */
 	int result;
 };
 
-/* Allocate a buffer, aborting if allocation fails */
-static void *
-xalloc(size_t size)
+struct hook_data_struct
 {
-	void *ptr;
-	
-	ptr = calloc(1, size);
-	if(!ptr)
-	{
-		abort();
-	}
-	return ptr;
-}
-
-/* Re-allocate a buffer, aborting if re-allocation fails */
-/* [not currently used]
-static void *
-xrealloc(void *ptr, size_t newsize)
-{
-	void *newptr;
-
-	newptr = realloc(ptr, newsize);
-	if(!newptr)
-	{
-		abort();
-	}
-	return newptr;
-}
-*/
+	/* The repository */
+	REPO *repo;
+	/* The path to the hook function to execute */
+	char *path;
+};
 
 /* Perform a SQL query, terminating the application if it fails */
 static int
-sql_exec(struct repo_data_struct *repo, const char *sql)
+sql_exec(REPO *repo, const char *sql)
 {
 	char *err;
 
@@ -160,53 +132,31 @@ sql_exec(struct repo_data_struct *repo, const char *sql)
 	if(sqlite3_exec(repo->db, sql, NULL, NULL, &err) != SQLITE_OK)
 	{
 		fprintf(stderr, "%s: %s\n", repo->progname, err);
-		exit(EXIT_FAILURE);
+		fprintf(stderr, "%s: while executing '%s'\n", repo->progname, sql);
+		exit(EXIT_FAILURE);	  
 	}
-	return 0;
-}
-
-/* Convert a git_time structure to a struct tm, along with hours/minutes
- * offsets and a timezone offset sign character ('+' or '-')
- */
-static int
-git_gmtime(const git_time *intime, struct tm *tm, int *hours, int *minutes, char *sign)
-{
-	int offset;
-	time_t t;
-
-	offset = intime->offset;
-	*sign = (offset < 0 ? '-' : '+');
-	if(offset < 0)
-	{
-		offset = -offset;
-	}
-	*hours = offset / 60;
-	*minutes = offset % 60;
-	t = (time_t) intime->time + (intime->offset * 60);
-	gmtime_r(&t, tm);
 	return 0;
 }
 
 static int
 release_exists_cb(void *data, int ncols, char **values, char **columns)
 {
-
-	struct repo_data_struct *repo;
+	struct release_match_struct *match;
 
 	(void) columns;
 
-	repo = (struct repo_data_struct *) data;
-	if(repo->result)
+	match = (struct release_match_struct *) data;
+	if(match->result)
 	{
 		return 0;
 	}
-	if(ncols >= 1 && values[0] && !strcmp(values[0], repo->oidstr))
+	if(ncols >= 1 && values[0] && !strcmp(values[0], match->oidstr))
 	{		
-		repo->result = 1;
+		match->result = 1;
 	}
 	else
 	{
-		repo->result = 2;
+		match->result = 2;
 	}	
 	return 0;
 }
@@ -216,33 +166,34 @@ release_exists_cb(void *data, int ncols, char **values, char **columns)
  * entry from the list and return zero so that it's added afresh.
  */
 static int
-release_exists(struct repo_data_struct *repo, const char *version, const char *branch_name, const char *oidstr)
+release_exists(REPO *repo, const char *version, const char *branch_name, const char *oidstr)
 {
+	struct release_match_struct match;
 	char *err;
-
-	strcpy(repo->oidstr, oidstr);
-	sprintf(repo->sqlbuf, "SELECT \"commit\" FROM \"releases\" WHERE \"release\" = '%s' AND \"branch\" = '%s'", version, branch_name);	
-	repo->result = 0;
+   
+	strcpy(match.oidstr, oidstr);
+	match.result = 0;
+	snprintf(sqlbuf, sqlbuflen, "SELECT \"commit\" FROM \"releases\" WHERE \"release\" = '%s' AND \"branch\" = '%s'", version, branch_name);	
 	err = NULL;
-	if(sqlite3_exec(repo->db, repo->sqlbuf, release_exists_cb, (void *) repo, &err))
+	if(sqlite3_exec(repo->db, sqlbuf, release_exists_cb, (void *) &match, &err))
 	{
 		fprintf(stderr, "%s: %s\n", repo->progname, err);
 		exit(EXIT_FAILURE);
 	}
 	/* Either no matching records, or an exact match for the OID */
-	if(repo->result == 0 || repo->result == 1)
+	if(match.result < 2)
 	{
-		return repo->result;
+		return match.result;
 	}
 	/* A match found, but the OID differs -- delete the old one */
-	sprintf(repo->sqlbuf, "DELETE FROM \"releases\" WHERE \"release\" = '%s' AND \"branch\" = '%s'", version, branch_name);
-	sql_exec(repo, repo->sqlbuf);
+	sprintf(sqlbuf, "DELETE FROM \"releases\" WHERE \"release\" = '%s' AND \"branch\" = '%s'", version, branch_name);
+	sql_exec(repo, sqlbuf);
 	return 0;
 }
 
 /* Add a release */
 static int
-add_release(struct repo_data_struct *repo, const char *branch_name, const git_oid *oid, const char *version, struct tm *when)
+add_release(REPO *repo, const char *branch_name, const git_oid *oid, const char *version, struct tm *when)
 {
 	char oidstr[GIT_OID_HEXSZ+1];
 	char datebuf[32], datebuf2[32];
@@ -261,25 +212,23 @@ add_release(struct repo_data_struct *repo, const char *branch_name, const git_oi
 		sql_exec(repo, "ROLLBACK");
 		return 0;
 	}
-	sprintf(repo->sqlbuf, "INSERT INTO \"releases\" (\"release\", \"branch\", \"commit\", \"when\", \"added\", \"state\") VALUES ('%s', '%s', '%s', '%s', '%s', '%s')", version, branch_name, oidstr, datebuf, datebuf2, "NEW");
+	sprintf(sqlbuf, "INSERT INTO \"releases\" (\"release\", \"branch\", \"commit\", \"when\", \"added\", \"state\") VALUES ('%s', '%s', '%s', '%s', '%s', '%s')", version, branch_name, oidstr, datebuf, datebuf2, "NEW");
 	oidstr[8] = 0;
 	fprintf(stderr, "%s: added %s as %s on %s\n", repo->progname, oidstr, version, branch_name);
-	sql_exec(repo, repo->sqlbuf);
+	sql_exec(repo, sqlbuf);
 	sql_exec(repo, "COMMIT");
 	return 0;
 }
 
 /* Add a 'tip' release */
 static int
-add_release_tip(struct repo_data_struct *repo, const char *branch_name, const git_oid *oid)
+add_release_tip(REPO *repo, const char *branch_name, const git_oid *oid)
 {
 	char versbuf[32];
 	git_commit *commit;
 	const git_signature *sig;
 	char oidstr[GIT_OID_HEXSZ+1];
 	struct tm tm;
-	int hours, minutes;
-	char sign;
 
 	(void) repo;
 
@@ -292,7 +241,7 @@ add_release_tip(struct repo_data_struct *repo, const char *branch_name, const gi
 	}
 	oidstr[8] = 0;
 	sig = git_commit_committer(commit);
-	git_gmtime(&(sig->when), &tm, &hours, &minutes, &sign);
+	gmgittime(&(sig->when), &tm, NULL, NULL, NULL);
 	strftime(versbuf, sizeof(versbuf), "%y%m.%d%H.%M%S-git", &tm);
 	strcat(versbuf, oidstr);
 	return add_release(repo, branch_name, oid, versbuf, &tm);
@@ -301,80 +250,38 @@ add_release_tip(struct repo_data_struct *repo, const char *branch_name, const gi
 static int
 tag_callback(const char *tag_name, git_oid *oid, void *data)
 {
-	const char *t;
-	struct repo_data_struct *repo;
+	struct tag_match_struct *match;
 	git_commit *commit;
 	const git_signature *sig;
-	int hours, minutes;
-	char sign;
 	struct tm tm;
-	
-	repo = (struct repo_data_struct *) data;	
-	if(git_oid_cmp(oid, &(repo->oidmatch)))
+	const char *version;
+
+	match = (struct tag_match_struct *) data;
+	if(git_oid_cmp(oid, &(match->oidmatch)))
 	{
 		return 0;
 	}
-	if(!strncmp(tag_name, "refs/tags/", 10))
-	{
-		tag_name += 10;
-	}
-	if(tolower(tag_name[0]) == 'v' || tolower(tag_name[0]) == 'r')
-	{
-		tag_name++;
-	}
-	else if(!strncmp(tag_name, "debian/", 7))
-	{
-		tag_name += 7;
-	}
-	else if(!strncmp(tag_name, "release/", 8))
-	{
-		tag_name+= 8;
-	}
-	if(!tag_name[0])
+	version = check_release_tag(tag_name);
+	if(!version)
 	{
 		return 0;
 	}
-	/* Check that the remainder of the tag looks something
-	 * like a version number: this means that it must consist
-	 * of a string which begins with '999.9', where '999' is
-	 * any number of digits.
-	 */
-	t= tag_name;
-	while(*t && isdigit(*t))
+	if(git_commit_lookup(&commit, match->repo->repo, oid))
 	{
-		t++;
-	}
-	if(*t != '.')
-	{
-		return 0;
-	}
-	t++;
-	if(!isdigit(*t))
-	{
-		return 0;
-	}
-	for(; *t; t++)
-	{
-		if(!isalnum(*t) && *t != '-' && *t != '_' && *t != '.' && *t != '~' && *t != '@')
-		{
-			return 0;
-		}
-	}
-	if(git_commit_lookup(&commit, repo->repo, oid))
-	{
-		fprintf(stderr, "failed to locate commit\n");
+		fprintf(stderr, "%s: failed to locate commit for tag '%s'\n", match->repo->progname, tag_name);
 		return 1;
 	}
 	sig = git_commit_committer(commit);
-	git_gmtime(&(sig->when), &tm, &hours, &minutes, &sign);	
-	add_release(repo, repo->branch_name, oid, tag_name, &tm);
+	gmgittime(&(sig->when), &tm, NULL, NULL, NULL);	
+	add_release(match->repo, match->branch_name, oid, version, &tm);
 	return 1;
 }
 
 static int
 branch_callback(git_reference *ref, const char *branch_name, git_branch_t branch_type, void *data)
 {
-	struct repo_data_struct *repo;
+	REPO *repo;
+	struct tag_match_struct tagmatch;
 	const char *cfgval, *t;
 	char *p;
 	const git_oid *oid;
@@ -383,21 +290,20 @@ branch_callback(git_reference *ref, const char *branch_name, git_branch_t branch
 	
 	(void) branch_type;
 
-	repo = (struct repo_data_struct *) data;
+	repo = (REPO *) data;
 	git_branch_name(&branch_name, ref);
-	/* Check that the branch name is suitable */
-	for(t = branch_name; *t; t++)
+	t = check_release_branch(branch_name);
+	if(!t)
 	{
-		if(!isalnum(*t) && *t != '-' && *t != '_')
-		{
-			fprintf(stderr, "%s: ignoring branch '%s' because its name is not valid for release-tracking\n", repo->progname, branch_name);
-			return 0;
-		}
+		fprintf(stderr, "%s: ignoring branch '%s' because its name is not valid for release-tracking\n", repo->progname, branch_name);
+		return 0;
 	}
-	repo->branch_name = branch_name;
-	p = alloca(strlen(branch_name) + 32);
+	memset(&tagmatch, 0, sizeof(tagmatch));
+	tagmatch.repo = repo;
+	tagmatch.branch_name = t;
+	p = alloca(strlen(t) + 32);
 	strcpy(p, "release-branch.");
-	strcat(p, branch_name);
+	strcat(p, t);
 	strcat(p, ".track");
 	cfgval = NULL;
 	git_config_get_string(&cfgval, repo->cfg, p);
@@ -409,7 +315,7 @@ branch_callback(git_reference *ref, const char *branch_name, git_branch_t branch
 			oid = git_reference_target(ref);
 			if(oid)
 			{
-				add_release_tip(repo, branch_name, oid);
+				add_release_tip(repo, t, oid);
 			}
 		}
 		else if(!strcmp(cfgval, "tag"))
@@ -425,17 +331,51 @@ branch_callback(git_reference *ref, const char *branch_name, git_branch_t branch
 			while(!git_revwalk_next(&oidbuf, walker))
 			{
 				/* Now attempt to find a tag for the commit */
-				git_oid_cpy(&(repo->oidmatch), &oidbuf);
-				git_tag_foreach(repo->repo, tag_callback, (void *) repo);
+				git_oid_cpy(&(tagmatch.oidmatch), &oidbuf);
+				git_tag_foreach(repo->repo, tag_callback, (void *) &tagmatch);
 			}
 			git_revwalk_free(walker);
 		}
 		else
 		{
-			fprintf(stderr, "%s: warning: tracking mode '%s' (for branch '%s') is not supported\n", repo->progname, cfgval, branch_name);			
+			fprintf(stderr, "%s: warning: tracking mode '%s' (for branch '%s') is not supported\n", repo->progname, cfgval, t);
 		}
 	}
-	repo->branch_name = NULL;
+	return 0;
+}
+
+static int
+build_release_cb(void *data, int ncols, char **values, char **columns)
+{
+	struct hook_data_struct *hook;
+	int r;
+	char *args[5];
+	char resultbuf[64];
+
+	hook = (struct hook_data_struct *) data;
+
+	(void) columns;
+	(void) ncols;
+
+	fprintf(stderr, "%s: will build '%s' for '%s' as '%s'\n", hook->repo->progname, values[0], values[1], values[2]);
+	args[0] = hook->path;
+	args[1] = values[0]; /* Commit */
+	args[2] = values[1]; /* Branch */
+	args[3] = values[2]; /* Version */
+	args[4] = NULL;
+	r = spawn(hook->path, args);
+	if(r == 0)
+	{
+		strcpy(resultbuf, "SUCCESS");
+	}
+	else
+	{
+		snprintf(resultbuf, sizeof(resultbuf), "FAILED (%d)", r);
+	}
+	snprintf(sqlbuf, sqlbuflen, "UPDATE \"releases\" SET \"state\" = '%s' WHERE \"release\" = '%s' AND \"branch\" = '%s'",
+			 resultbuf, values[2], values[1]);
+	sql_exec(hook->repo, sqlbuf);
+	fprintf(stderr, "%s: build status is: %s\n", hook->repo->progname, resultbuf);
 	return 0;
 }
 
@@ -448,84 +388,46 @@ usage(const char *progname)
 int
 main(int argc, char **argv)
 {
-	git_buf pathbuf;
 	const char *path;
-	const git_error *err;
-	struct repo_data_struct data;
+	REPO *repo;
 	git_branch_iterator *branch_iter;
 	git_branch_t branch_type;
 	git_reference *ref;
-	char *t;
+	int c;
+	char *err, *p;
+	struct hook_data_struct hook;
 
-	memset(&data, 0, sizeof(data));
 	path = NULL;
-	if(argc == 2)
+	while((c = getopt(argc, argv, "h")) != -1)
 	{
-		path = argv[1];
+		switch(c)
+		{
+		case 'h':
+			usage(argv[0]);
+			exit(EXIT_SUCCESS);
+		default:
+			usage(argv[0]);
+			exit(EXIT_FAILURE);
+		}
 	}
-	else if(argc != 1)
+	if(argc - optind > 1)
 	{
 		usage(argv[0]);
 		exit(EXIT_FAILURE);
 	}
-	data.progname = argv[0];
-	data.sqlbuflen = 1024;
-	data.sqlbuf = (char *) xalloc(data.sqlbuflen);
-	if(!path)
+	if(argc - optind > 0)
 	{
-		path = getenv("GIT_DIR");
+		path = argv[1];
 	}
-	memset(&pathbuf, 0, sizeof(pathbuf));
-	if(!path)
+	repo = repo_open(argv[0], path, SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, 1);
+	if(!repo)
 	{
-		if(git_repository_discover(&pathbuf, ".", 0, "/"))
-		{
-			err = giterr_last();
-			fprintf(stderr, "%s: %s\n", path, err->message);
-			exit(EXIT_FAILURE);
-		}
-		path = pathbuf.ptr;
-	}
-	if(git_repository_open(&(data.repo), path))
-	{
-		err = giterr_last();
-		fprintf(stderr, "%s: %s\n", path, err->message);
 		exit(EXIT_FAILURE);
 	}
-	data.path = path;
-	/* Determine the release database path */
-	data.dbpath = (char *) xalloc(strlen(path) + 32);
-	strcpy(data.dbpath, path);
-	t = strchr(data.dbpath, 0);
-	if(t > data.dbpath)
-	{
-		t--;
-		if(*t != '/')
-		{
-			t++;
-			*t = '/';
-			t++;
-			*t = 0;
-		}
-	}
-	strcat(data.dbpath, "releases.sqlite3");	
+	sqlbuflen = 1024;
+	sqlbuf = (char *) xalloc(sqlbuflen + 1);
 	
-	/* Open the configuration dictionary */
-	if(git_repository_config(&(data.cfg), data.repo))
-	{
-		err = giterr_last();
-		fprintf(stderr, "%s: %s\n", path, err->message);
-		exit(EXIT_FAILURE);
-	}
-	/* Open (creating if necessary) the SQLite3 release database */
-	if(sqlite3_open_v2(data.dbpath, &(data.db), SQLITE_OPEN_READWRITE|SQLITE_OPEN_CREATE, NULL))
-	{
-		fprintf(stderr, "%s: %s\n", data.dbpath, sqlite3_errmsg(data.db));
-		exit(EXIT_FAILURE);
-	}
-	sqlite3_extended_result_codes(data.db, 1);
-	
-	sql_exec(&data,
+	sql_exec(repo,
 			 "CREATE TABLE IF NOT EXISTS \"releases\" ( "
 			 "  \"release\" VARCHAR(32) NOT NULL, "
 			 "  \"commit\" CHAR(40) NOT NULL, "
@@ -537,18 +439,46 @@ main(int argc, char **argv)
 			 "  PRIMARY KEY (\"release\", \"branch\") "
 			 ")");
 	
-	git_branch_iterator_new(&branch_iter, data.repo, GIT_BRANCH_LOCAL);
+	git_branch_iterator_new(&branch_iter, repo->repo, GIT_BRANCH_LOCAL);
 	while(git_branch_next(&ref, &branch_type, branch_iter) == 0)
 	{
-		branch_callback(ref, git_reference_name(ref), branch_type, (void *) &data);
+		branch_callback(ref, git_reference_name(ref), branch_type, (void *) repo);
 	}
 	git_branch_iterator_free(branch_iter);
 
-	git_config_free(data.cfg);
-	git_repository_free(data.repo);
-	git_buf_free(&pathbuf);
-	sqlite3_close(data.db);
-	free(data.dbpath);
-	free(data.sqlbuf);
+	/* Iterate each of the releases and invoke the 'release' hook */
+	memset(&hook, 0, sizeof(hook));
+	hook.repo = repo;
+	hook.path = (char *) xalloc(strlen(repo->path) + 32);
+	strcpy(hook.path, repo->path);
+	p = strchr(hook.path, 0);
+	if(p > hook.path)
+	{
+		p--;
+		if(*p != '/')
+		{
+			p++;
+			*p = '/';
+			p++;
+			*p = 0;
+		}
+		else
+		{
+			p++;
+		}
+	}
+	strcpy(p, "hooks/release");
+	if(!access(hook.path, R_OK|X_OK))
+	{
+		err = NULL;
+		if(sqlite3_exec(repo->db, "SELECT \"commit\", \"branch\", \"release\" FROM \"releases\" WHERE \"state\" = 'NEW'", build_release_cb, (void *) &hook, &err))
+		{
+			fprintf(stderr, "%s: %s\n", repo->progname, err);
+			exit(EXIT_FAILURE);
+		}
+	}
+	free(hook.path);
+	free(sqlbuf);
+	repo_close(repo);
 	return 0;
 }
